@@ -17,7 +17,6 @@ package lwipv6
 import "C"
 
 import (
-	//"encoding/binary"
 	"net"
 	"encoding/binary"
 	"unsafe"
@@ -87,21 +86,46 @@ type networkInterface struct {
 	netif *C.struct_netif
 }
 
-// Convert a Go-lang IP address to an LWIP compatible one
-func netIPToLWIP(netAddr net.IP) *C.struct_ip_addr {
-	longIP := netAddr.To16()
-	lwipAddr := new(C.struct_ip_addr)
+// Convert an net.IPNet to an LWIP ip_addr struct
+func convert_IPNet_to_LWIP(ipNet net.IPNet) (*C.struct_ip_addr, *C.struct_ip_addr) {
+	lwipAddr := convert_IP_to_LWIP(ipNet.IP)
+	lwipNetmask := convert_IPMask_to_LWIP(ipNet.Mask)
 
-	for idx := 0; idx < 4; idx++ {
-		lwipAddr.addr[idx] = C.uint32_t(binary.BigEndian.Uint32(longIP[idx:idx+4]))
+	return lwipAddr, lwipNetmask
+}
+
+// Convert a net.IPMask to an LWIP netmask.
+func convert_IPMask_to_LWIP(netMask net.IPMask) (*C.struct_ip_addr) {
+	// Golang actually uses IP the same internally as LWIP. But, since net.IP is a
+	// possibly variable length buffer, we need to handle the case where we had to
+	// stretch it to 16 bytes for the netmask.
+	lwipNetmask := convert_IP_to_LWIP((net.IP)(netMask))
+	if len(netMask) == net.IPv4len {
+		lwipNetmask.addr[0] = C.uint32_t(^uint32(0))
+		lwipNetmask.addr[1] = C.uint32_t(^uint32(0))
+		lwipNetmask.addr[2] = C.uint32_t(^uint32(0))
 	}
+	return lwipNetmask
+}
 
+// Convert a net.IP address to an LWIP compatible one
+func convert_IP_to_LWIP(netAddr net.IP) *C.struct_ip_addr {
+	longIP := []byte(netAddr.To16())
+	lwipAddr := new(C.struct_ip_addr)
+	for idx := 0; idx < 4; idx++ {
+		lwipAddr.addr[idx] = C.uint32_t(binary.LittleEndian.Uint32(longIP[4*idx:(4*idx)+4]))
+	}
 	return lwipAddr
 }
 
-// Convert an LWIP compatible address to a net.IP
-func lwipAddrToNetIP(lwipAddr C.struct_ip_addr) {
+// Converts an LWIP address struct to a a Go IP (in long format)
+func convert_LWIP_to_IP(ip_addr *C.struct_ip_addr) net.IP {
+	longIP := make ([]byte, 16)
+	for idx := 0; idx < 4; idx++ {
+		binary.LittleEndian.PutUint32(longIP[4*idx:(4*idx)+4], uint32(ip_addr.addr[idx]))
+	}
 
+	return net.IP(longIP)
 }
 
 type LWIPInterfaceType int
@@ -137,17 +161,13 @@ func CreateInterface(ifType LWIPInterfaceType, arg string, flags int ) *networkI
 
 // Add an address to an interface
 func (this *networkInterface) AddAddress(addr net.IPNet) int {
-	lwipAddr := netIPToLWIP(addr.IP)
-	lwipNetmask := netIPToLWIP((net.IP)(addr.Mask))
-
+	lwipAddr, lwipNetmask := convert_IPNet_to_LWIP(addr)
 	return int(C.lwip_add_addr(this.netif, lwipAddr, lwipNetmask))
 }
 
 // Remove an address from an interface
 func (this *networkInterface) DelAddress(addr net.IPNet) int {
-	lwipAddr := netIPToLWIP(addr.IP)
-	lwipNetmask := netIPToLWIP((net.IP)(addr.Mask))
-
+	lwipAddr, lwipNetmask := convert_IPNet_to_LWIP(addr)
 	return int(C.lwip_del_addr(this.netif, lwipAddr, lwipNetmask))
 }
 
